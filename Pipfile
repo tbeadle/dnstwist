@@ -9,6 +9,7 @@ verify_ssl = true
 aiohttp = "*"
 asyncdns2 = "*"
 idna = "*"
+aiodns = "*"
 
 [requires]
 python_version = "3.7"

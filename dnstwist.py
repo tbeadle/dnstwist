@@ -26,7 +26,7 @@ __version__ = "20190706"
 __email__ = "marcin@ulikowski.pl"
 
 import abc
-import asyncdns
+import aiodns
 import argparse
 import asyncio
 import collections
@@ -52,8 +52,6 @@ DIR_DB = "database"
 FILE_TLD = pathlib.Path(DIR, DIR_DB, "effective_tld_names.dat")
 
 # DB_GEOIP = FILE_GEOIP.exists()
-
-asyncdns.resolver.TIMEOUT = 5
 
 REQUEST_TIMEOUT_HTTP = 5
 REQUEST_TIMEOUT_SMTP = 5
@@ -798,11 +796,11 @@ def generate_idle(domains):
 
 class DNSTwister:
     dictionary = None
-    nameservers = ("8.8.8.8",)
+    nameservers = ("8.8.8.8", "8.8.4.4", "208.67.222.222", "208.67.220.220")
     port = 53
     output_fmt = "cli"
     show_all = False
-    worker_count = 10
+    worker_count = 40
 
     def __init__(
         self,
@@ -819,12 +817,12 @@ class DNSTwister:
         self.show_all = show_all
         self.dictionary = dictionary
         self.output_fmt = output_fmt
-        self.nameservers = asyncdns.RoundRobinServer(
-            tuple((nameserver, port) for nameserver in nameservers)
-        )
+        self.nameservers = nameservers
 
     def generate_cli(self, domains):
         output = ""
+        if not domains:
+            return output
 
         width_fuzzer = max([len(d["fuzzer"]) for d in domains]) + 1
         width_domain = max([len(d["domain-name"]) for d in domains]) + 1
@@ -967,7 +965,7 @@ class DNSTwister:
 
         total_domains = len(self.domains)
         progress_task = asyncio.create_task(self.status(total_domains, successes))
-        resolver = asyncdns.Resolver()
+        resolver = aiodns.DNSResolver(nameservers=self.nameservers, timeout=5)
         for i in range(self.worker_count):
 
             # worker.uri_scheme = url.scheme
@@ -1012,21 +1010,19 @@ class DNSTwister:
     async def start_worker(self, resolver, successes):
         while self.domains:
             domain = self.domains.popleft()
-            query = asyncdns.Query(domain["domain-name"], asyncdns.A, asyncdns.IN)
-            reply = await resolver.lookup(
-                query, servers=self.nameservers, should_cache=False
-            )
-
-            if reply.rcode == asyncdns.NXDOMAIN:
+            try:
+                reply = await resolver.query(idna.encode(domain['domain-name']), 'A')
+            except aiodns.error.DNSError:
                 continue
 
-            for answer in reply.answers:
-                if isinstance(answer, (asyncdns.rr.A, asyncdns.rr.AAAA)):
-                    domain.setdefault("dns-a", []).append(answer.address)
-                elif isinstance(answer, asyncdns.rr.NS):
-                    domain.setdefault("dns-ns", []).append(answer.unicode_host)
-                elif isinstance(answer, asyncdns.rr.MX):
-                    domain.setdefault("dns-mx", []).append(answer.unicode_exchange)
+            for answer in reply:
+                if isinstance(answer, (aiodns.pycares.ares_query_a_result,
+                                       aiodns.pycares.ares_query_aaaa_result)):
+                    domain.setdefault("dns-a", []).append(answer.host)
+                elif isinstance(answer, aiodns.pycares.ares_query_ns_result):
+                    domain.setdefault("dns-ns", []).append(answer.host)
+                elif isinstance(answer, aiodns.pycares.ares_query_mx_result):
+                    domain.setdefault("dns-mx", []).append(answer.host)
             successes.append(domain)
 
         #            if self.option_mxcheck:
