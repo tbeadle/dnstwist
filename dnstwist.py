@@ -824,8 +824,8 @@ class DNSTwister:
         if not domains:
             return output
 
-        width_fuzzer = max([len(d["fuzzer"]) for d in domains]) + 1
-        width_domain = max([len(d["domain-name"]) for d in domains]) + 1
+        width_fuzzer = max(len(d["fuzzer"]) for d in domains) + 1
+        width_domain = max(len(d["domain-name"]) for d in domains) + 1
 
         for domain in domains:
             info = ""
@@ -1008,22 +1008,23 @@ class DNSTwister:
             print(self.generate_cli(successes))
 
     async def start_worker(self, resolver, successes):
+        async def do_lookup(typ):
+            try:
+                reply = await resolver.query(idna.encode(domain['domain-name']), typ)
+            except aiodns.error.DNSError:
+                return False
+            domain[f"dns-{typ.lower()}"] = [answer.host for answer in reply]
+            return True
+
         while self.domains:
             domain = self.domains.popleft()
-            try:
-                reply = await resolver.query(idna.encode(domain['domain-name']), 'A')
-            except aiodns.error.DNSError:
-                continue
-
-            for answer in reply:
-                if isinstance(answer, (aiodns.pycares.ares_query_a_result,
-                                       aiodns.pycares.ares_query_aaaa_result)):
-                    domain.setdefault("dns-a", []).append(answer.host)
-                elif isinstance(answer, aiodns.pycares.ares_query_ns_result):
-                    domain.setdefault("dns-ns", []).append(answer.host)
-                elif isinstance(answer, aiodns.pycares.ares_query_mx_result):
-                    domain.setdefault("dns-mx", []).append(answer.host)
-            successes.append(domain)
+            success = True
+            success &= await do_lookup('NS')
+            success &= await do_lookup('A')
+            success &= await do_lookup('AAAA')
+            success &= await do_lookup('MX')
+            if success:
+                successes.append(domain)
 
         #            if self.option_mxcheck:
         #                if "dns-mx" in domain:
