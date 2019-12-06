@@ -1001,12 +1001,16 @@ class DNSTwister:
                 successes.append(domain)
 
                 if self.geoip and "dns-a" in domain:
-                    try:
-                        resp = geoip_reader.country(domain["dns-a"][0])
-                    except geoip2.errors.AddressNotFoundError:
-                        pass
-                    else:
-                        domain["geoip-country"] = [resp.country.iso_code]
+                    countries = set()
+                    for addr in domain['dns-a']:
+                        try:
+                            resp = geoip_reader.country(addr)
+                        except geoip2.errors.AddressNotFoundError:
+                            pass
+                        else:
+                            countries.add(resp.country.iso_code)
+                    if countries:
+                        domain["geoip-country"] = sorted(countries)
 
         #            if self.option_mxcheck:
         #                if "dns-mx" in domain:
