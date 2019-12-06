@@ -31,33 +31,30 @@ import argparse
 import asyncio
 import collections
 import datetime
+import geoip2.database
+import geoip2.errors
 import idna
 import json
 import pathlib
 import re
 import sys
-from random import randint
 
 # import signal
 # from os import path
 # import socket
 # import smtplib
-# import GeoIP
 # import whois
 # import ssdeep
 
 DIR = pathlib.Path(sys.argv[0]).parent
 DIR_DB = "database"
-# FILE_GEOIP = path.join(DIR, DIR_DB, "GeoIP.dat")
+FILE_GEOIP = pathlib.Path(DIR, DIR_DB, "GeoLite2-Country.mmdb")
 FILE_TLD = pathlib.Path(DIR, DIR_DB, "effective_tld_names.dat")
-
-# DB_GEOIP = FILE_GEOIP.exists()
 
 REQUEST_TIMEOUT_HTTP = 5
 REQUEST_TIMEOUT_SMTP = 5
 
 if sys.platform != "win32" and sys.stdout.isatty():
-    FG_RND = "\x1b[3%dm" % randint(1, 8)
     FG_RED = "\x1b[31m"
     FG_YEL = "\x1b[33m"
     FG_GRE = "\x1b[32m"
@@ -68,7 +65,6 @@ if sys.platform != "win32" and sys.stdout.isatty():
     ST_BRI = "\x1b[1m"
     ST_RST = "\x1b[0m"
 else:
-    FG_RND = ""
     FG_RED = ""
     FG_YEL = ""
     FG_GRE = ""
@@ -82,7 +78,7 @@ else:
 
 # XXX Revisit this since it's not async
 def p_err(data, status=None):
-    sys.stderr.write(path.basename(sys.argv[0]) + ": " + data)
+    sys.stderr.write(pathlib.Path(sys.argv[0]).name + ": " + data)
     sys.stderr.flush()
     if status is not None:
         sys.exit(status)
@@ -797,6 +793,7 @@ def generate_idle(domains):
 class DNSTwister:
     dictionary = None
     nameservers = ("8.8.8.8", "8.8.4.4", "208.67.222.222", "208.67.220.220")
+    geoip = False
     port = 53
     output_fmt = "cli"
     show_all = False
@@ -805,74 +802,69 @@ class DNSTwister:
     def __init__(
         self,
         domains,
+        *,
         worker_count=worker_count,
         dictionary=dictionary,
-        show_all=show_all,
         output_fmt=output_fmt,
         nameservers=nameservers,
         port=port,
+        geoip=geoip,
+        show_all=show_all,
     ):
         self.domains = domains
         self.worker_count = max(1, worker_count)
-        self.show_all = show_all
         self.dictionary = dictionary
         self.output_fmt = output_fmt
         self.nameservers = nameservers
+        self.geoip = geoip
+        self.show_all = show_all
+
+    @staticmethod
+    def cli_domain_data_text(label, text):
+        return f"{FG_YEL}{label}:{FG_CYA}{text}{FG_RST}"
+
+    def cli_domain_data(self, domain, key, label):
+        if key in domain:
+            text = self.one_or_all(domain[key])
+            return [self.cli_domain_data_text(label, text)]
+        else:
+            return []
 
     def generate_cli(self, domains):
-        output = ""
         if not domains:
-            return output
+            return ""
+
+        output = []
 
         width_fuzzer = max(len(d["fuzzer"]) for d in domains) + 1
         width_domain = max(len(d["domain-name"]) for d in domains) + 1
 
         for domain in domains:
-            info = ""
+            info = []
 
-            if "dns-a" in domain:
-                info += self.one_or_all(domain["dns-a"])
-                if "geoip-country" in domain:
-                    info += FG_CYA + "/" + domain["geoip-country"] + FG_RST
-                info += " "
-
-            if "dns-aaaa" in domain:
-                info += self.one_or_all(domain["dns-aaaa"]) + " "
-
-            if "dns-ns" in domain:
-                info += "%sNS:%s%s%s " % (
-                    FG_YEL,
-                    FG_CYA,
-                    self.one_or_all(domain["dns-ns"]),
-                    FG_RST,
-                )
+            for (key, label) in (
+                ("dns-a", "A"),
+                ("dns-aaaa", "AAAA"),
+                ("dns-ns", "NS"),
+            ):
+                info.extend(self.cli_domain_data(domain, key, label))
 
             if "dns-mx" in domain:
-                if "mx-spy" in domain:
-                    info += "%sSPYING-MX:%s%s" % (FG_YEL, domain["dns-mx"][0], FG_RST)
-                else:
-                    info += "%sMX:%s%s%s " % (
-                        FG_YEL,
-                        FG_CYA,
-                        self.one_or_all(domain["dns-mx"]),
-                        FG_RST,
+                info.extend(
+                    self.cli_domain_data(
+                        domain,
+                        "dns-mx",
+                        "SPYING-MX" if domain.get("mx-spy", False) else "MX",
                     )
-
-            if "banner-http" in domain:
-                info += '%sHTTP:%s"%s"%s ' % (
-                    FG_YEL,
-                    FG_CYA,
-                    domain["banner-http"],
-                    FG_RST,
                 )
 
-            if "banner-smtp" in domain:
-                info += '%sSMTP:%s"%s"%s ' % (
-                    FG_YEL,
-                    FG_CYA,
-                    domain["banner-smtp"],
-                    FG_RST,
-                )
+            for (key, label) in (
+                ("geoip-country", "COUNTRY"),
+                ("banner-http", "HTTP"),
+                ("banner-smtp", "SMTP"),
+                ("ssdeep-score", "SSDEEP"),
+            ):
+                info.extend(self.cli_domain_data(domain, key, label))
 
             if "whois-created" in domain and "whois-updated" in domain:
                 if domain["whois-created"] == domain["whois-updated"]:
@@ -898,30 +890,18 @@ class DNSTwister:
                             FG_RST,
                         )
 
-            if "ssdeep-score" in domain:
-                if domain["ssdeep-score"] > 0:
-                    info += "%sSSDEEP:%d%%%s " % (
-                        FG_YEL,
-                        domain["ssdeep-score"],
-                        FG_RST,
-                    )
-
-            info = info.strip()
-
             if not info:
-                info = "-"
+                info.append("-")
 
-            output += "%s%s%s %s %s\n" % (
-                FG_BLU,
-                domain["fuzzer"].ljust(width_fuzzer),
-                FG_RST,
-                domain["domain-name"].ljust(width_domain),
-                info,
+            output.append(
+                f"{FG_BLU}{domain['fuzzer']:{width_fuzzer}}{FG_RST} "
+                f"{domain['domain-name']:{width_domain}} " + " ".join(info)
             )
 
-        return output
+        return "\n".join(output)
 
     def generate_csv(self, domains):
+        # TODO Use the csv package.
         output = "fuzzer,domain-name,dns-a,dns-aaaa,dns-mx,dns-ns,geoip-country,whois-created,whois-updated,ssdeep-score\n"
 
         for domain in domains:
@@ -949,14 +929,7 @@ class DNSTwister:
         return json.dumps(domains, indent=4, sort_keys=True)
 
     def one_or_all(self, answers):
-        if self.show_all:
-            result = ";".join(map(str, answers))
-        else:
-            if len(answers):
-                result = str(answers[0])
-            else:
-                result = ""
-        return result
+        return ";".join(answers[:None if self.show_all else 1])
 
     async def run(self):
         print(f"Processing {len(self.domains)} domain variants")
@@ -978,8 +951,6 @@ class DNSTwister:
             #    worker.option_extdns = True
             # if MODULE_WHOIS and args.whois:
             #    worker.option_whois = True
-            # if MODULE_GEOIP and DB_GEOIP and args.geoip:
-            #    worker.option_geoip = True
             # if args.banners:
             #    worker.option_banners = True
             # if (
@@ -1010,21 +981,32 @@ class DNSTwister:
     async def start_worker(self, resolver, successes):
         async def do_lookup(typ):
             try:
-                reply = await resolver.query(idna.encode(domain['domain-name']), typ)
+                reply = await resolver.query(idna.encode(domain["domain-name"]), typ)
             except aiodns.error.DNSError:
                 return False
             domain[f"dns-{typ.lower()}"] = [answer.host for answer in reply]
             return True
 
+        if self.geoip:
+            geoip_reader = geoip2.database.Reader(str(FILE_GEOIP))
+
         while self.domains:
             domain = self.domains.popleft()
-            success = True
-            success &= await do_lookup('NS')
-            success &= await do_lookup('A')
-            success &= await do_lookup('AAAA')
-            success &= await do_lookup('MX')
+            success = False
+            success |= await do_lookup("NS")
+            success |= await do_lookup("A")
+            success |= await do_lookup("AAAA")
+            success |= await do_lookup("MX")
             if success:
                 successes.append(domain)
+
+                if self.geoip and "dns-a" in domain:
+                    try:
+                        resp = geoip_reader.country(domain["dns-a"][0])
+                    except geoip2.errors.AddressNotFoundError:
+                        pass
+                    else:
+                        domain["geoip-country"] = [resp.country.iso_code]
 
         #            if self.option_mxcheck:
         #                if "dns-mx" in domain:
@@ -1047,19 +1029,6 @@ class DNSTwister:
     #                        ]
     #                    except Exception:
     #                        pass
-    #
-    #            if self.option_geoip:
-    #                if "dns-a" in domain:
-    #                    gi = GeoIP.open(
-    #                        FILE_GEOIP, GeoIP.GEOIP_INDEX_CACHE | GeoIP.GEOIP_CHECK_CACHE
-    #                    )
-    #                    try:
-    #                        country = gi.country_name_by_addr(domain["dns-a"][0])
-    #                    except Exception:
-    #                        pass
-    #                    else:
-    #                        if country:
-    #                            domain["geoip-country"] = country.split(",")[0]
     #
     #            if self.option_banners:
     #                if "dns-a" in domain:
@@ -1133,15 +1102,9 @@ def main():
         formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=30),
     )
 
+    parser.add_argument('-a', '--all', dest='show_all', action='store_true', default=DNSTwister.show_all, help='show all DNS records')
+
     parser.add_argument("domain", help="domain name or URL to check")
-    parser.add_argument(
-        "-a",
-        "--all",
-        action="store_true",
-        dest="show_all",
-        default=DNSTwister.show_all,
-        help="show all DNS records",
-    )
     #    parser.add_argument(
     #        "-b",
     #        "--banners",
@@ -1156,9 +1119,13 @@ def main():
         metavar="FILE",
         help="generate additional domains using dictionary FILE",
     )
-    #    parser.add_argument(
-    #        "-g", "--geoip", action="store_true", help="perform lookup for GeoIP location"
-    #    )
+    parser.add_argument(
+        "-g",
+        "--geoip",
+        action="store_true",
+        default=DNSTwister.geoip,
+        help="perform lookup for GeoIP location",
+    )
     #    parser.add_argument(
     #        "-m",
     #        "--mxcheck",
@@ -1193,7 +1160,7 @@ def main():
         type=int,
         metavar="NUMBER",
         default=DNSTwister.worker_count,
-        help="start specified NUMBER of workers (default: %default)",
+        help="start specified NUMBER of workers (default: %(default)s)",
     )
     #    parser.add_argument(
     #        "-w",
@@ -1269,12 +1236,8 @@ def main():
         sys.stdout.write(generate_idle(domains))
         bye(0)
 
-    #    if not DB_GEOIP and args.geoip:
-    #        p_err("error: missing GeoIP database file: %\n" % FILE_GEOIP)
-    #        bye(-1)
-
     print(
-        FG_RND
+        FG_RED
         + ST_BRI
         + r"""     _           _            _     _
   __| |_ __  ___| |___      _(_)___| |_
@@ -1340,10 +1303,11 @@ def main():
     twister = DNSTwister(
         domains,
         worker_count=args.worker_count,
-        show_all=args.show_all,
         output_fmt=args.output_fmt,
         nameservers=args.nameservers,
         port=args.port,
+        geoip=args.geoip,
+        show_all=args.show_all,
     )
     asyncio.run(twister.run())
 

@@ -7,7 +7,7 @@ verify_ssl = true
 
 [packages]
 aiohttp = "*"
-asyncdns2 = "*"
+geoip2 = "*"
 idna = "*"
 aiodns = "*"
 
