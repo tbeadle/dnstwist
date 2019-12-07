@@ -352,7 +352,7 @@ class DomainFuzz(DomainGenerator):
 
         self.domains = filtered
 
-    def __bitsquatting(self):
+    def bitsquatting(self):
         result = []
         masks = [1, 2, 4, 8, 16, 32, 64, 128]
         for i in range(0, len(self.domain)):
@@ -365,7 +365,7 @@ class DomainFuzz(DomainGenerator):
 
         return result
 
-    def __homoglyph(self):
+    def homoglyph(self):
         glyphs = {
             "a": ["à", "á", "â", "ã", "ä", "å", "ɑ", "ạ", "ǎ", "ă", "ȧ", "ą"],
             "b": ["d", "lb", "ʙ", "ɓ", "ḃ", "ḅ", "ḇ", "ƅ"],
@@ -449,7 +449,7 @@ class DomainFuzz(DomainGenerator):
 
         return list(result_1pass | result_2pass)
 
-    def __hyphenation(self):
+    def hyphenation(self):
         result = []
 
         for i in range(1, len(self.domain)):
@@ -457,7 +457,7 @@ class DomainFuzz(DomainGenerator):
 
         return result
 
-    def __insertion(self):
+    def insertion(self):
         result = []
 
         for i in range(1, len(self.domain) - 1):
@@ -473,7 +473,7 @@ class DomainFuzz(DomainGenerator):
 
         return list(set(result))
 
-    def __omission(self):
+    def omission(self):
         result = []
 
         for i in range(0, len(self.domain)):
@@ -486,7 +486,7 @@ class DomainFuzz(DomainGenerator):
 
         return list(set(result))
 
-    def __repetition(self):
+    def repetition(self):
         result = []
 
         for i in range(0, len(self.domain)):
@@ -500,7 +500,7 @@ class DomainFuzz(DomainGenerator):
 
         return list(set(result))
 
-    def __replacement(self):
+    def replacement(self):
         result = []
 
         for i in range(0, len(self.domain)):
@@ -511,7 +511,7 @@ class DomainFuzz(DomainGenerator):
 
         return list(set(result))
 
-    def __subdomain(self):
+    def subdomain(self):
         result = []
 
         for i in range(1, len(self.domain)):
@@ -523,7 +523,7 @@ class DomainFuzz(DomainGenerator):
 
         return result
 
-    def __transposition(self):
+    def transposition(self):
         result = []
 
         for i in range(0, len(self.domain) - 1):
@@ -537,7 +537,7 @@ class DomainFuzz(DomainGenerator):
 
         return result
 
-    def __vowel_swap(self):
+    def vowel_swap(self):
         vowels = "aeiou"
         result = []
 
@@ -548,7 +548,7 @@ class DomainFuzz(DomainGenerator):
 
         return list(set(result))
 
-    def __addition(self):
+    def addition(self):
         result = []
 
         for i in range(97, 123):
@@ -563,51 +563,23 @@ class DomainFuzz(DomainGenerator):
             {"fuzzer": "Original*", "domain-name": self.domain + "." + self.tld}
         )
 
-        # XXX This could definitely be shortened up.
-        for domain in self.__addition():
-            self.domains.append(
-                {"fuzzer": "Addition", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__bitsquatting():
-            self.domains.append(
-                {"fuzzer": "Bitsquatting", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__homoglyph():
-            self.domains.append(
-                {"fuzzer": "Homoglyph", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__hyphenation():
-            self.domains.append(
-                {"fuzzer": "Hyphenation", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__insertion():
-            self.domains.append(
-                {"fuzzer": "Insertion", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__omission():
-            self.domains.append(
-                {"fuzzer": "Omission", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__repetition():
-            self.domains.append(
-                {"fuzzer": "Repetition", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__replacement():
-            self.domains.append(
-                {"fuzzer": "Replacement", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__subdomain():
-            self.domains.append(
-                {"fuzzer": "Subdomain", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__transposition():
-            self.domains.append(
-                {"fuzzer": "Transposition", "domain-name": domain + "." + self.tld}
-            )
-        for domain in self.__vowel_swap():
-            self.domains.append(
-                {"fuzzer": "Vowel-swap", "domain-name": domain + "." + self.tld}
-            )
+        for fuzzer in (
+            'addition',
+            'bitsquatting',
+            'homoglyph',
+            'hyphenation',
+            'insertion',
+            'omission',
+            'repetition',
+            'replacement',
+            'subdomain',
+            'transposition',
+            'vowel-swap',
+        ):
+            for domain in getattr(self, fuzzer.replace('-', '_'))():
+                self.domains.append(
+                    {"fuzzer": fuzzer.capitalize(), "domain-name": domain + "." + self.tld}
+                )
 
         if "." in self.tld:
             self.domains.append(
@@ -931,6 +903,9 @@ class DNSTwister:
         message["Subject"] = "Cookies"
         message.set_content("And that's how the cookie crumbles.")
 
+        # XXX I think this can be smarter about determining if the mx host is a spy.
+        # Other things can probably be taken in to account, like maybe it will only use
+        # TLS.
         try:
             await aiosmtplib.send(
                 message, hostname=mx, port=25, timeout=REQUEST_TIMEOUT_SMTP
