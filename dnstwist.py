@@ -27,15 +27,18 @@ __email__ = "marcin@ulikowski.pl"
 
 import abc
 import aiodns
+import aiosmtplib
 import argparse
 import asyncio
 import collections
 import datetime
+from email.message import EmailMessage
 import geoip2.database
 import geoip2.errors
 import idna
 import json
 import pathlib
+from random import randint
 import re
 import sys
 
@@ -751,18 +754,6 @@ class TldDict(DomainDict):
 #                return hello[4:].strip()
 #            return hello[:40]
 #
-#    def __mxcheck(self, mx, from_domain, to_domain):
-#        from_addr = "randombob" + str(randint(1, 9)) + "@" + from_domain
-#        to_addr = "randomalice" + str(randint(1, 9)) + "@" + to_domain
-#        try:
-#            smtp = smtplib.SMTP(mx, 25, timeout=REQUEST_TIMEOUT_SMTP)
-#            smtp.sendmail(from_addr, to_addr, "And that's how the cookie crumbles")
-#            smtp.quit()
-#        except Exception:
-#            return False
-#        else:
-#            return True
-#
 #    def stop(self):
 #        self.kill_received = True
 #
@@ -794,6 +785,7 @@ class DNSTwister:
     dictionary = None
     nameservers = ("8.8.8.8", "8.8.4.4", "208.67.222.222", "208.67.220.220")
     geoip = False
+    mxcheck = False
     port = 53
     output_fmt = "cli"
     show_all = False
@@ -802,6 +794,7 @@ class DNSTwister:
     def __init__(
         self,
         domains,
+        domain_orig,
         *,
         worker_count=worker_count,
         dictionary=dictionary,
@@ -810,14 +803,17 @@ class DNSTwister:
         port=port,
         geoip=geoip,
         show_all=show_all,
+        mxcheck=mxcheck,
     ):
         self.domains = domains
+        self.domain_orig = domain_orig
         self.worker_count = max(1, worker_count)
         self.dictionary = dictionary
         self.output_fmt = output_fmt
         self.nameservers = nameservers
         self.geoip = geoip
         self.show_all = show_all
+        self.mxcheck = mxcheck
 
     @staticmethod
     def cli_domain_data_text(label, text):
@@ -928,8 +924,24 @@ class DNSTwister:
 
         return json.dumps(domains, indent=4, sort_keys=True)
 
+    async def do_mxcheck(self, mx, from_domain, to_domain):
+        message = EmailMessage()
+        message["From"] = "randombob{}@{}".format(randint(1, 9), from_domain)
+        message["To"] = "randomalice{}@{}".format(randint(1, 9), to_domain)
+        message["Subject"] = "Cookies"
+        message.set_content("And that's how the cookie crumbles.")
+
+        try:
+            await aiosmtplib.send(
+                message, hostname=mx, port=25, timeout=REQUEST_TIMEOUT_SMTP
+            )
+        except Exception:
+            return False
+        else:
+            return True
+
     def one_or_all(self, answers):
-        return ";".join(answers[:None if self.show_all else 1])
+        return ";".join(answers[: None if self.show_all else 1])
 
     async def run(self):
         print(f"Processing {len(self.domains)} domain variants")
@@ -1002,7 +1014,7 @@ class DNSTwister:
 
                 if self.geoip and "dns-a" in domain:
                     countries = set()
-                    for addr in domain['dns-a']:
+                    for addr in domain["dns-a"]:
                         try:
                             resp = geoip_reader.country(addr)
                         except geoip2.errors.AddressNotFoundError:
@@ -1012,13 +1024,15 @@ class DNSTwister:
                     if countries:
                         domain["geoip-country"] = sorted(countries)
 
-        #            if self.option_mxcheck:
-        #                if "dns-mx" in domain:
-        #                    if domain["domain-name"] is not self.domain_orig:
-        #                        if self.__mxcheck(
-        #                            domain["dns-mx"][0], self.domain_orig, domain["domain-name"]
-        #                        ):
-        #                            domain["mx-spy"] = True
+                if (
+                    self.mxcheck
+                    and "dns-mx" in domain
+                    and domain["domain-name"] != self.domain_orig
+                ):
+                    if await self.do_mxcheck(
+                        domain["dns-mx"][0], self.domain_orig, domain["domain-name"]
+                    ):
+                        domain["mx-spy"] = True
 
     #
     #            if self.option_whois:
@@ -1106,7 +1120,14 @@ def main():
         formatter_class=lambda prog: argparse.HelpFormatter(prog, max_help_position=30),
     )
 
-    parser.add_argument('-a', '--all', dest='show_all', action='store_true', default=DNSTwister.show_all, help='show all DNS records')
+    parser.add_argument(
+        "-a",
+        "--all",
+        dest="show_all",
+        action="store_true",
+        default=DNSTwister.show_all,
+        help="show all DNS records",
+    )
 
     parser.add_argument("domain", help="domain name or URL to check")
     #    parser.add_argument(
@@ -1130,12 +1151,13 @@ def main():
         default=DNSTwister.geoip,
         help="perform lookup for GeoIP location",
     )
-    #    parser.add_argument(
-    #        "-m",
-    #        "--mxcheck",
-    #        action="store_true",
-    #        help="check if MX host can be used to intercept e-mails",
-    #    )
+    parser.add_argument(
+        "-m",
+        "--mxcheck",
+        action="store_true",
+        default=DNSTwister.mxcheck,
+        help="check if MX host can be used to intercept e-mails",
+    )
     parser.add_argument(
         "-f",
         "--format",
@@ -1306,12 +1328,14 @@ def main():
 
     twister = DNSTwister(
         domains,
+        args.domain,
         worker_count=args.worker_count,
         output_fmt=args.output_fmt,
         nameservers=args.nameservers,
         port=args.port,
         geoip=args.geoip,
         show_all=args.show_all,
+        mxcheck=args.mxcheck,
     )
     asyncio.run(twister.run())
 

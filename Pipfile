@@ -10,6 +10,7 @@ aiohttp = "*"
 geoip2 = "*"
 idna = "*"
 aiodns = "*"
+aiosmtplib = "*"
 
 [requires]
 python_version = "3.7"
